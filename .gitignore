@@ -1,3 +1,6 @@
 *~
 *.pyc
 *.pyo
+*.key
+*.crt
+*.pem

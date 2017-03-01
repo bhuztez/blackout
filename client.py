@@ -17,7 +17,136 @@ from socket import (
 
 from asyncio import (
     get_event_loop, sleep, ensure_future,
-    open_connection, Protocol, Future)
+    open_connection, Protocol, Transport, Future)
+
+from asyncio.sslproto import SSLProtocol
+
+import ssl
+
+
+class ProxyProtocol(Protocol):
+
+    def __init__(self, protocol):
+        self._protocol = protocol
+
+    def switch(self, protocol):
+        self._protocol = protocol
+
+    def connection_made(self, transport):
+        self._protocol.connection_made(transport)
+
+    def connection_lost(self, exc):
+        self._protocol.connection_lost(exc)
+
+    def data_received(self, data):
+        self._protocol.data_received(data)
+
+    def eof_received(self):
+        self._protocol.eof_received()
+
+    def pause_writing(self):
+        self._protocol.pause_writing()
+
+    def resume_writing(self):
+        self._protocol.resume_writing()
+
+
+def create_tls_context():
+    ROOT = os.path.dirname(os.path.abspath(__file__))
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.load_cert_chain(
+        certfile=os.path.join(ROOT,"peer.crt"),
+        keyfile=os.path.join(ROOT,"peer.key"))
+    context.load_verify_locations(
+        os.path.join(ROOT,"ca.crt"))
+    return context
+
+
+class CaptureClientHello(Transport):
+
+    def __init__(self, waiter):
+        self._waiter = waiter
+
+    def write(self, data):
+        self._waiter.set_result(data)
+
+
+class PeerSSLProtocol(Protocol):
+
+    def __init__(self, loop, connection):
+        self.proxy = ProxyProtocol(self)
+        self.buffer = b''
+        self.length = None
+
+        self.connected = Future()
+        self.hello_received = Future()
+        ensure_future(self.init_connection(loop, connection))
+
+    async def init_connection(self, loop, connection):
+        waiter = Future()
+        hello_sent = Future()
+
+        context = create_tls_context()
+        trans = CaptureClientHello(hello_sent)
+        ssl_proto = SSLProtocol(loop, connection, context, waiter)
+        ssl_proto.connection_made(trans)
+
+        out_data = await hello_sent
+        my_random = out_data[15:43]
+
+        transport = await self.connected
+        transport.write(out_data)
+
+        await self.hello_received
+        peer_random = self.buffer[15:43]
+
+        if my_random == peer_random:
+            transport.close()
+            return
+
+        if my_random > peer_random:
+            ssl_proto._waiter = None
+            ssl_proto._transport = None
+
+            context = create_tls_context()
+            proto = SSLProtocol(loop, connection, context, waiter, server_side=True)
+
+            self.proxy.switch(proto)
+            proto.connection_made(transport)
+            loop.call_soon(proto.data_received, self.buffer)
+
+        else:
+            ssl_proto._transport = transport
+            self.proxy.switch(ssl_proto)
+            loop.call_soon(ssl_proto.data_received, self.buffer[self.length+5:])
+
+        try:
+            await waiter
+        except:
+            connection.endpoint.connections.pop(connection.addr)
+            raise
+
+
+    def connection_made(self, transport):
+        self.connected.set_result(transport)
+
+
+    def data_received(self, data):
+        self.buffer = self.buffer + data
+
+        if self.hello_received.done():
+            return
+
+        l = len(self.buffer)
+
+        if self.length is None and l >= 5:
+            self.length, = unpack("!H", self.buffer[3:5])
+
+        if l >= self.length + 5:
+            self.hello_received.set_result(None)
+
 
 
 class ObjectRequest:
@@ -320,8 +449,11 @@ class TcpEndpoint:
             conn, addr = await self.loop.sock_accept(s)
             addr = encode_addr(addr)
 
-            transport, connection = await self.loop.create_connection(lambda: Connection(self, addr), sock=conn)
-            self.connections[addr] = connection
+            connection = Connection(self, addr)
+            proto = PeerSSLProtocol(self.loop, connection).proxy
+
+            self.connections[addr] = proto
+            transport, _ = await self.loop.create_connection(lambda: proto, sock=conn)
 
 
     def connect(self, peer):
@@ -345,9 +477,10 @@ class TcpEndpoint:
         except OSError:
             return
 
-        transport, connection = await self.loop.create_connection(lambda: Connection(self, addr), sock=s)
-        self.connections[addr] = connection
-
+        connection = Connection(self, addr)
+        proto = PeerSSLProtocol(self.loop, connection).proxy
+        self.connections[addr] = proto
+        transport, _ = await self.loop.create_connection(lambda: proto, sock=s)
 
 
 def create_periodic_task(f, delay, interval):
@@ -404,6 +537,7 @@ def run_loop():
         loop.run_forever()
     finally:
         loop.close()
+
 
 def main(port, path):
     club = Club(path)

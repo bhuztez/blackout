@@ -1,0 +1,54 @@
+at very early stage of development. nothing works except copying file
+from one directory to another.
+
+create certificates for TLS connection.
+
+  $ python3 ca.py
+
+check if these certificates work
+
+start a server in one terminal
+
+  $ python3 tls/server.py 9999
+
+start a client in another
+
+  $ python3 tls/client.py 9999
+
+the server will print b'hello'
+
+check if in-memory test works
+
+  $ python3 tls/fake.py
+
+check if modification to TLS protocol works
+
+  $ python3 tls/peer.py
+
+create directories
+
+  /
+    tmp/
+      blackout/
+        a/
+          cur/
+          tmp/
+        b/
+          cur/
+          tmp/
+
+  $ echo "hello" > /tmp/blackout/a/cur/00
+
+start tracker
+
+  $ python3 tracker.py 10000
+
+start one peer
+
+  $ python3 client.py 9999 /tmp/blackout/a
+
+start another peer
+
+  $ python3 client.py 9999 /tmp/blackout/b
+
+in a few seconds, we will find 00 under /tmp/blackout/b/cur
