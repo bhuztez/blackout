@@ -23,6 +23,8 @@ from asyncio.sslproto import SSLProtocol
 
 import ssl
 
+import inotify
+
 
 class ProxyProtocol(Protocol):
 
@@ -179,7 +181,7 @@ class ObjectRequest:
 
 class Club:
 
-    def __init__(self, path):
+    def __init__(self, path, monitor):
         self.path = path
         self.endpoints = set()
 
@@ -188,19 +190,32 @@ class Club:
 
         self.requesting = set()
 
+        os.makedirs(os.path.join(path, 'cur'), exist_ok=True)
+        os.makedirs(os.path.join(path, 'new'), exist_ok=True)
+        os.makedirs(os.path.join(path, 'tmp'), exist_ok=True)
 
-    def _object_path(self, filename):
+        monitor.register(os.path.join(path, 'cur'), inotify.IN_CREATE, self.on_new_object)
+
+    def on_new_object(self, event):
+        for e in self.endpoints:
+            for c in e.connections.values():
+                ensure_future(c._protocol._app_protocol.write_object(bytes.fromhex(event.name)))
+
+    def _cur_path(self, filename):
         return os.path.join(self.path, 'cur', filename)
 
-    def _temp_path(self, filename):
+    def _new_path(self, filename):
+        return os.path.join(self.path, 'new', filename)
+
+    def _tmp_path(self, filename):
         return os.path.join(self.path, 'tmp', filename)
 
     def tempfile(self, sha):
-        return open(self._temp_path(sha.hex()), 'xb')
+        return open(self._tmp_path(sha.hex()), 'xb')
 
     def open(self, sha):
         try:
-            return open(self._object_path(sha.hex()), 'rb')
+            return open(self._cur_path(sha.hex()), 'rb')
         except FileNotFoundError:
             return None
 
@@ -208,7 +223,7 @@ class Club:
         return os.listdir(os.path.join(self.path, 'cur'))
 
     def new_object(self, sha, conn):
-        if os.path.exists(self._object_path(sha.hex())):
+        if os.path.exists(self._cur_path(sha.hex())):
             return
 
         self.sha_to_conn[sha].add(conn)
@@ -222,7 +237,8 @@ class Club:
 
 
     def finish_object(self, sha, conn):
-        os.rename(self._temp_path(sha.hex()), self._object_path(sha.hex()))
+        os.rename(self._tmp_path(sha.hex()), self._new_path(sha.hex()))
+        os.link(self._new_path(sha.hex()), self._cur_path(sha.hex()))
 
         s = self.sha_to_conn.pop(sha)
         self.requesting.remove(sha)
@@ -531,8 +547,7 @@ class TcpTrackerClient:
         writer.close()
 
 
-def run_loop():
-    loop = get_event_loop()
+def run_loop(loop):
     try:
         loop.run_forever()
     finally:
@@ -540,11 +555,14 @@ def run_loop():
 
 
 def main(port, path):
-    club = Club(path)
+    loop = get_event_loop()
+    monitor = inotify.Monitor(loop)
 
-    endpoint = TcpEndpoint(club, ("127.0.0.1", port))
+    club = Club(path, monitor)
+
+    endpoint = TcpEndpoint(club, ("127.0.0.1", port), loop)
     client = TcpTrackerClient(club, "127.0.0.1", 10000)
-    run_loop()
+    run_loop(loop)
 
 
 if __name__ == '__main__':

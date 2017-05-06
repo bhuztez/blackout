@@ -25,19 +25,6 @@ check if modification to TLS protocol works
 
   $ python3 tls/peer.py
 
-create directories
-
-  /
-    tmp/
-      blackout/
-        a/
-          cur/
-          tmp/
-        b/
-          cur/
-          tmp/
-
-  $ echo "hello" > /tmp/blackout/a/cur/00
 
 start tracker
 
@@ -49,6 +36,10 @@ start one peer
 
 start another peer
 
-  $ python3 client.py 9999 /tmp/blackout/b
+  $ python3 client.py 9998 /tmp/blackout/b
+
+create a new file
+
+  $ echo "hello" > /tmp/blackout/a/cur/00
 
 in a few seconds, we will find 00 under /tmp/blackout/b/cur
