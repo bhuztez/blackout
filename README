@@ -38,8 +38,24 @@ start another peer
 
   $ python3 client.py 9998 /tmp/blackout/b
 
-create a new file
+start stmp server for peer a
 
-  $ echo "hello" > /tmp/blackout/a/cur/00
+  $ python3 smtp.py 10025 /tmp/blackout/a
 
-in a few seconds, we will find 00 under /tmp/blackout/b/cur
+start dovecot for peer b
+
+  $ ./run-dovecot.sh 10110 /tmp/blackout/b
+
+to deliver message to dovecot
+
+  $ python3 deliver.py /tmp/blackout/b
+
+send a message
+
+  $ python3 send.py 10025
+
+after a few seconds, run
+
+  $ python3 read.py 10110
+
+this will print the message sent previously
